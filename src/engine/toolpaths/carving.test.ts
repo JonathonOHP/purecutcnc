@@ -963,6 +963,15 @@ function testTravelRapidsStayAtSafeZ(): void {
       assert(rapid.from.z === safeZ && rapid.to.z === safeZ,
         `${strategy}: an XY rapid must start and end at safe Z ${safeZ}, got ${rapid.from.z} -> ${rapid.to.z}`)
     }
+    // A trochoidal target has no closing retract: the next target emits it. A
+    // target started from nowhere would leave a jump out of the cut instead of
+    // an unsafe rapid, so the stream itself has to be unbroken.
+    for (let index = 1; index < result.moves.length; index += 1) {
+      const previous = result.moves[index - 1].to
+      const next = result.moves[index].from
+      assert(approx(previous.x, next.x) && approx(previous.y, next.y) && approx(previous.z, next.z),
+        `${strategy}: move ${index} must start where move ${index - 1} ended`)
+    }
   }
 
   console.log('cross-target rapids at safe Z: PASSED')
