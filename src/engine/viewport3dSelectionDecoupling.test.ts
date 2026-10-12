@@ -74,7 +74,7 @@ const clamp: Clamp = {
 }
 
 // A clamp built unhighlighted (as buildScene now builds it).
-const clampMesh = buildClampMesh(clamp, false, false, threePalette)
+const clampMesh = buildClampMesh(clamp, false, false, 'mm', threePalette)
 const clampMaterial = standardMaterial(clampMesh)
 const clampGeometry = clampMesh.geometry
 const unselectedColor = clampMaterial.color.getHexString()

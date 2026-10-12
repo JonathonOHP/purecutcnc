@@ -33,6 +33,7 @@ import type { SimulationGrid, SimulationResult } from '../../engine/simulation'
 import type { ToolpathMove } from '../../engine/toolpaths/types'
 import { effectiveFeed } from '../../engine/toolpaths/feed'
 import type { Clamp, MachineOrigin, Operation, ToolType } from '../../types/project'
+import type { Units } from '../../utils/units'
 import { useTheme } from '../../theme/themeContext'
 import { useI18n } from '../../i18n/i18nContext'
 
@@ -253,6 +254,10 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
   const initialThreePaletteRef = useRef(threePalette)
   const [activePreset, setActivePreset] = useState<ViewPreset | null>('iso')
   const playbackUnits = playbackInput?.units ?? 'mm'
+  // The clamp geometry's minimum render height is unit-aware (issue #1009).
+  // playbackInput carries the project's units; with no playback input this
+  // viewport already defaults to 'mm', whose floor only matters below 0.01 in.
+  const projectUnits: Units = playbackUnits === 'in' ? 'inch' : 'mm'
   const fallbackFeed = playbackUnits === 'in' ? PLAYBACK_FALLBACK_FEED_IN : PLAYBACK_FALLBACK_FEED_MM
   // Anchor the playback speed multiplier to the operation's feed (units/sec). If the
   // operation has no feed defined, anchor to a sensible per-unit fallback so the UI
@@ -965,7 +970,7 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
 
     const collidingClampIdSet = new Set(collidingClampIds)
     const nextClampMeshes = clamps.map((clamp) =>
-      buildClampMesh(clamp, clamp.id === selectedClampId, collidingClampIdSet.has(clamp.id), threePalette),
+      buildClampMesh(clamp, clamp.id === selectedClampId, collidingClampIdSet.has(clamp.id), projectUnits, threePalette),
     )
     for (const mesh of nextClampMeshes) {
       scene.add(mesh)
@@ -977,7 +982,7 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
       disposeClampMeshes(scene)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- threePalette is from stable theme; adding rebuilds on toggle
-  }, [clamps, collidingClampIds, disposeClampMeshes, selectedClampId])
+  }, [clamps, collidingClampIds, disposeClampMeshes, projectUnits, selectedClampId])
 
   useEffect(() => {
     const scene = sceneRef.current
