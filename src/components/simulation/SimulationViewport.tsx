@@ -83,6 +83,10 @@ interface SimulationViewportProps {
   selectedClampId: string | null
   collidingClampIds: string[]
   origin: MachineOrigin
+  /** The project's real units, used for unit-aware minimum render heights.
+   *  Deliberately not derived from `playbackInput`, which is absent until an
+   *  operation is simulated and would fall back to mm for an inch project. */
+  units: Units
   stockColor?: string
   stockHasProfile?: boolean
   zoomWindowActive?: boolean
@@ -240,6 +244,7 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
   selectedClampId,
   collidingClampIds,
   origin,
+  units,
   stockColor,
   zoomWindowActive = false,
   onZoomWindowComplete,
@@ -254,10 +259,6 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
   const initialThreePaletteRef = useRef(threePalette)
   const [activePreset, setActivePreset] = useState<ViewPreset | null>('iso')
   const playbackUnits = playbackInput?.units ?? 'mm'
-  // The clamp geometry's minimum render height is unit-aware (issue #1009).
-  // playbackInput carries the project's units; with no playback input this
-  // viewport already defaults to 'mm', whose floor only matters below 0.01 in.
-  const projectUnits: Units = playbackUnits === 'in' ? 'inch' : 'mm'
   const fallbackFeed = playbackUnits === 'in' ? PLAYBACK_FALLBACK_FEED_IN : PLAYBACK_FALLBACK_FEED_MM
   // Anchor the playback speed multiplier to the operation's feed (units/sec). If the
   // operation has no feed defined, anchor to a sensible per-unit fallback so the UI
@@ -970,7 +971,7 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
 
     const collidingClampIdSet = new Set(collidingClampIds)
     const nextClampMeshes = clamps.map((clamp) =>
-      buildClampMesh(clamp, clamp.id === selectedClampId, collidingClampIdSet.has(clamp.id), projectUnits, threePalette),
+      buildClampMesh(clamp, clamp.id === selectedClampId, collidingClampIdSet.has(clamp.id), units, threePalette),
     )
     for (const mesh of nextClampMeshes) {
       scene.add(mesh)
@@ -982,7 +983,7 @@ export const SimulationViewport = forwardRef<SimulationViewportHandle, Simulatio
       disposeClampMeshes(scene)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- threePalette is from stable theme; adding rebuilds on toggle
-  }, [clamps, collidingClampIds, disposeClampMeshes, projectUnits, selectedClampId])
+  }, [clamps, collidingClampIds, disposeClampMeshes, selectedClampId, units])
 
   useEffect(() => {
     const scene = sceneRef.current

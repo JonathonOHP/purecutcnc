@@ -177,7 +177,10 @@ export function buildStockMesh(stock: Stock, threePalette: ThreeThemePalette): T
  */
 function buildWallGeometry(shape: THREE.Shape, depth: number): THREE.BufferGeometry {
   const points = shape.getPoints()
-  if (points.length < 2 || depth < 0.01) return new THREE.BufferGeometry()
+  // The caller floors `depth` at minRenderHeight(units), so a zero-height
+  // region arrives here at the guard height and must still draw. A unit-blind
+  // `0.01` here discarded that guard in an inch project (issue #1009).
+  if (points.length < 2 || depth <= 0) return new THREE.BufferGeometry()
 
   const positions: number[] = []
   const indices: number[] = []
@@ -659,10 +662,10 @@ export function buildClampClearanceBox(
   return box
 }
 
-export function buildTabMesh(tab: Tab, selected = false, threePalette?: ThreeThemePalette): THREE.Mesh {
+export function buildTabMesh(tab: Tab, units: Units, selected = false, threePalette?: ThreeThemePalette): THREE.Mesh {
   const shape = profileToShape(rectProfile(tab.x, tab.y, tab.w, tab.h))
   const zStart = Math.min(tab.z_top, tab.z_bottom)
-  const depth = Math.max(Math.abs(tab.z_top - tab.z_bottom), 0.1)
+  const depth = Math.max(Math.abs(tab.z_top - tab.z_bottom), minRenderHeight(units))
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth,
     bevelEnabled: false,
@@ -831,7 +834,7 @@ export function buildFeatureSolid(
       const zTop = resolveDimension(feature.z_top, project)
       const zBottom = resolveDimension(feature.z_bottom, project)
       const yStart = Math.min(zTop, zBottom)
-      const depth = Math.max(Math.abs(zBottom - zTop), 0.1)
+      const depth = Math.max(Math.abs(zBottom - zTop), minRenderHeight(project.meta.units))
 
       const crossSection = module.CrossSection.ofPolygons([contour], 'EvenOdd')
       try {
@@ -854,7 +857,9 @@ export function buildFeatureSolid(
   const zTop = resolveDimension(feature.z_top, project)
   const zBottom = resolveDimension(feature.z_bottom, project)
   const yStart = Math.min(zTop, zBottom)
-  const depth = Math.max(Math.abs(zBottom - zTop), 0.1)
+  // Floors at the unit-aware guard so a 0.0625 in feature on 0.0625 in stock is
+  // not inflated to the old unit-blind 0.1 in (issue #1009).
+  const depth = Math.max(Math.abs(zBottom - zTop), minRenderHeight(project.meta.units))
 
   const crossSection = module.CrossSection.ofPolygons([contour], 'EvenOdd')
   try {
@@ -1041,7 +1046,7 @@ export async function buildScene(project: Project, threePalette: ThreeThemePalet
   stockWireframe.visible = showStockReference
 
   for (const tab of visibleTabs) {
-    tabMeshes.set(tab.id, buildTabMesh(tab, false, threePalette))
+    tabMeshes.set(tab.id, buildTabMesh(tab, project.meta.units, false, threePalette))
   }
 
   for (const clamp of visibleClamps) {

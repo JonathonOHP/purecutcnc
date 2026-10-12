@@ -117,7 +117,7 @@ const tab: Tab = {
   visible: true,
 }
 
-const tabMesh = buildTabMesh(tab, false, threePalette)
+const tabMesh = buildTabMesh(tab, 'mm', false, threePalette)
 const tabMaterial = standardMaterial(tabMesh)
 const tabUnselectedColor = tabMaterial.color.getHexString()
 const tabUnselectedOpacity = tabMaterial.opacity

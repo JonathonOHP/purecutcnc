@@ -36,6 +36,7 @@ import {
   type Clamp,
   type Project,
   type SketchFeature,
+  type Tab,
 } from '../types/project'
 import type { Units } from '../utils/units'
 import { resolveFeatureInstance } from '../store/helpers/resolveFeatures'
@@ -43,6 +44,7 @@ import {
   buildClampMesh,
   buildFeatureMesh,
   buildFeatureSolid,
+  buildTabMesh,
   getManifoldModule,
   loadSTLTransformedGeometry,
   minRenderHeight,
@@ -209,10 +211,23 @@ function makeBoxMesh(): ImportedTriangleMesh {
   return { positions, index, bounds: computeMeshBounds(positions) }
 }
 
-function makeModelProject(units: Units, zBottom: number, zTop: number, featureId: string): Project {
+/** Single triangle — `new Manifold(...)` rejects it as non-manifold (see §10). */
+function makeOpenMesh(): ImportedTriangleMesh {
+  const positions = new Float32Array([0, 0, 0, 2, 0, 0, 2, 1, 0])
+  const index = new Uint32Array([0, 1, 2])
+  return { positions, index, bounds: computeMeshBounds(positions) }
+}
+
+function makeModelProject(
+  units: Units,
+  zBottom: number,
+  zTop: number,
+  featureId: string,
+  mesh: ImportedTriangleMesh = makeBoxMesh(),
+): Project {
   const project = newProject('Render height model', units)
   const assetId = `model-asset-${featureId}`
-  project.modelAssets = { [assetId]: serializeImportedMesh(makeBoxMesh(), 'stl') }
+  project.modelAssets = { [assetId]: serializeImportedMesh(mesh, 'stl') }
   project.featureDefinitions = {
     [featureId]: {
       id: featureId,
@@ -267,6 +282,82 @@ function makeModelProject(units: Units, zBottom: number, zTop: number, featureId
   assert(solid, 'inch model CSG solid should build')
   const bbox = solid.boundingBox()
   assertApprox(bbox.max[2] - bbox.min[2], 0.0625, 'inch model CSG solid Z height')
+  solid.delete()
+}
+
+// ---------------------------------------------------------------------------
+// 7. Boolean model solid — the geometry the 3D view actually shows
+// ---------------------------------------------------------------------------
+
+{
+  const manifold = await getManifoldModule()
+  for (const operation of ['add', 'subtract'] as const) {
+    const feature = makeFeature(`solid-${operation}-inch`, operation, 0, 0.0625)
+    const solid = buildFeatureSolid(manifold, inchProject, feature)
+    assert(solid, `inch ${operation} solid should build`)
+    const height = solid.boundingBox().max[2] - solid.boundingBox().min[2]
+    assertApprox(height, 0.0625, `inch ${operation} solid Z height`)
+    assert(Math.abs(height - 0.1) > 1e-6, `inch ${operation} solid must not be inflated to 0.1`)
+    solid.delete()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. Tab extrusion
+// ---------------------------------------------------------------------------
+
+const baseTab: Tab = {
+  id: 'tab-base',
+  name: 'Tab',
+  x: 0,
+  y: 0,
+  w: 8,
+  h: 8,
+  z_top: 4,
+  z_bottom: 0,
+  visible: true,
+}
+
+{
+  const tab = buildTabMesh({ ...baseTab, id: 'tab-inch', z_top: 0.05, z_bottom: 0 }, 'inch', false, threePalette)
+  const height = meshHeightY(tab)
+  assertApprox(height, 0.05, 'inch 0.05 tab height')
+  assert(Math.abs(height - 0.1) > 1e-6, 'inch tab must not be inflated to the old 0.1 floor')
+}
+
+{
+  const tab = buildTabMesh({ ...baseTab, id: 'tab-mm', z_top: 3, z_bottom: 0 }, 'mm', false, threePalette)
+  assertApprox(meshHeightY(tab), 3, 'mm 3 tab height is unchanged')
+}
+
+// ---------------------------------------------------------------------------
+// 9. A zero-height region still builds a wall at the guard height
+// ---------------------------------------------------------------------------
+
+{
+  // stockThickness 0 drives depth to 0, which the caller floors at the guard.
+  // The unit-blind `depth < 0.01` in buildWallGeometry discarded it in inches.
+  const feature = makeFeature('zero-region-inch', 'region', 0, 0)
+  const mesh = buildFeatureMesh(inchProject, feature, false, false, 0, threePalette)
+  const position = (mesh as THREE.Mesh).geometry.getAttribute('position')
+  assert(position && position.count > 0, 'zero-height inch region must build a non-empty wall')
+  assertApprox(meshHeightY(mesh), minRenderHeight('inch'), 'zero-height inch region wall height')
+}
+
+// ---------------------------------------------------------------------------
+// 10. STL non-manifold fallback extrusion
+// ---------------------------------------------------------------------------
+
+{
+  const project = makeModelProject('inch', 0, 0.0625, 'model-nonmanifold', makeOpenMesh())
+  const feature = resolveFeatureInstance(project, 'model-nonmanifold')
+  assert(feature, 'non-manifold inch model feature should resolve')
+  const manifold = await getManifoldModule()
+  const solid = buildFeatureSolid(manifold, project, feature)
+  assert(solid, 'non-manifold inch STL fallback solid should build')
+  const height = solid.boundingBox().max[2] - solid.boundingBox().min[2]
+  assertApprox(height, 0.0625, 'non-manifold inch STL fallback Z height')
+  assert(Math.abs(height - 0.1) > 1e-6, 'non-manifold fallback must not be inflated to 0.1')
   solid.delete()
 }
 
