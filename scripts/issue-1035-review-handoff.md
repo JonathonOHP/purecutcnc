@@ -84,6 +84,42 @@ report, not acceptance. Specifically:
     (b) drop `claude` from the manager-commit condition; (c) remove the child-env scrub
     of `DEEPSEEK_*`. Report each result — a harness that stays green is the finding.
 
+## Round 2 — what changed since the first review
+
+Your round-1 blocker was accepted **in substance**: `Bash(npx tsx *)` etc. run
+repository code, so an allow-list of them cannot be a sandbox, and the slice made a
+false safety claim. Correction slice C therefore:
+
+1. added `--disallowedTools` denying the **direct** `git`/`gh` write path in both
+   modes (deny beats allow), and
+2. corrected the overclaim in `run-claude-agent.sh`, `dispatch-task.sh`,
+   `.agents/skills/manager-delegate/SKILL.md`, `scripts/INDEX.md` and
+   `scripts/claude-deepseek-agent-prompt.md` so they now say the confinement is
+   permission-based, not an OS sandbox, that the allow-listed build/test commands
+   remain general-purpose escape hatches, and that the manager's review of the real
+   diff is the guarantee.
+
+The allow-lists themselves were deliberately **not** weakened: `npx tsx`,
+`npx eslint` and `npm run build:gates` are required by the approved plan.
+
+What round 2 must establish:
+
+- The deny list is real and present in both modes — check the flag name against
+  `claude --help` on this machine, and confirm the fake-`claude` harness sees it.
+- No comment, help string or doc still claims confinement the code does not deliver.
+  Grep for the old phrasings (`denied commit-capable tools`, "cannot modify a linked
+  worktree's shared Git metadata" applied to claude, `never git commit`).
+- The round-1 invariants still hold: credential scrubbing, `--model`, artifacts,
+  markers, manager-commit ownership, other providers unchanged.
+- Whether the escape-hatch limitation is now stated honestly and completely. If you
+  still call it a blocker, state precisely what would satisfy you — and whether that
+  is a change inside issue #1035's plan or a follow-up requiring OS-level sandboxing.
+
+Note on checks: this session is read-only and may be denied `mktemp`. The manager has
+already independently re-run all five provider harnesses and three mutation checks;
+do not treat a sandbox denial as a defect in the slice. Report what you could
+actually run, and say so plainly when you could not run something.
+
 ## Report format
 
 Findings first, most severe first. Each finding: severity
