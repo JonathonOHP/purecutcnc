@@ -74,12 +74,13 @@ lifecycle markers to the log, with its final message at FILE.final.md; its
 heartbeats indicate process liveness only. Dispatch in the background and poll
 scripts/worker-status.sh --slug SLUG instead of killing a long run.
 
-DSH/Claude/Codex commit fallback: these providers edit the linked worktree but
-either cannot write its shared Git metadata (the DSH/Codex sandbox) or have the
-direct git/gh write path denied with --disallowedTools (claude). Claude's
-allow-listed build/test commands still execute repository code, so its
-confinement is permission-based rather than a sandbox; the real guarantee is the
-manager's review of the actual diff. After a zero-exit DSH, Claude, or Codex
+DSH/Claude/Codex commit fallback: these providers edit the linked worktree.
+The DSH/Codex sandbox cannot write its shared Git metadata; the claude leaf has
+the direct git/gh write path denied with --disallowedTools, but its allow-listed
+build/test commands still execute repository code in both modes, so its
+confinement is permission-based rather than a sandbox and a spawned subprocess
+can still commit. The real guarantee is the manager's review of the actual
+diff. After a zero-exit DSH, Claude, or Codex
 implementation run, this manager-side dispatcher creates one commit if there
 are changes. It never auto-commits a failed or no-change DSH/Claude/Codex run.
 Claude/DeepSeek workers retain their existing worker-owned commit behavior.
@@ -88,10 +89,10 @@ Permissions: every provider sends the prompt to its configured external service,
 so get explicit approval first. claude-deepseek reads .env.agent and runs a
 bypassPermissions Claude worker; the claude provider uses the Claude Code CLI's
 own login (drawing on that account's weekly limit) and never reads .env.agent,
-running read-only review or acceptEdits implementation with a build/test
-allowlist; dsh uses its own configured credentials and confines worker tool
-calls to DSH's read-only/workspace-write modes. Codex uses its own login and
-read-only/workspace-write sandbox; it never reads .env.agent.
+running plan-mode review or acceptEdits implementation with a tool allowlist
+(permission-based, not a sandbox); dsh uses its own configured credentials and
+confines worker tool calls to DSH's read-only/workspace-write modes. Codex uses
+its own login and read-only/workspace-write sandbox; it never reads .env.agent.
 EOF
 }
 

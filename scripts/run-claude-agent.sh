@@ -5,17 +5,18 @@
 # It never reads .env.agent and never sets a DeepSeek or Anthropic endpoint or
 # credential variable: the credential is whatever the user configured for the
 # `claude` CLI, so the worker draws on that account (and its weekly limit).
-# Review is read-only; implement edits only inside the worktree and leaves them
-# uncommitted for the manager to commit. Heartbeats indicate process liveness
-# only, never tool activity.
+# The worker is instructed to review only, to edit only inside the supplied
+# worktree, and to leave its edits uncommitted for the manager. Heartbeats
+# indicate process liveness only, never tool activity.
 #
 # Confinement is permission-based, not an OS sandbox. --allowedTools is an
 # allow-list, not a sandbox: it decides only which commands run without a prompt
 # in a non-interactive -p session. The direct git/gh write path is explicitly
-# denied with --disallowedTools, but the allow-listed `npx tsx`, `npx eslint`
-# and `npm run …` execute repository code, so they remain general-purpose escape
-# hatches. The real guarantee that a worker cannot commit and merge is the
-# manager's review of the actual diff — a worker commit can never merge itself.
+# denied with --disallowedTools, but in both modes the allow-listed `npx tsx`,
+# `npx eslint` and `npm run …` execute repository code, so they can still
+# perform arbitrary file writes and subprocess work; they remain
+# general-purpose escape hatches. The manager's review of the actual diff is
+# the acceptance gate — a worker commit can never merge itself.
 
 set -euo pipefail
 
@@ -47,15 +48,17 @@ Usage: scripts/run-claude-agent.sh --mode review|implement [options] < prompt.md
 
 Uses the Claude Code CLI's own configured login, never .env.agent, and scrubs
 inherited DeepSeek/Anthropic endpoint variables so a legacy DeepSeek endpoint
-can never be used. Review runs read-only (plan permission mode plus a read-only
-tool allowlist); implement runs acceptEdits with a repository build/test
-allowlist and leaves edits uncommitted for the manager. Confinement is
-permission-based, not an OS sandbox: --allowedTools only decides which commands
-run without a prompt, and the allow-listed build/test commands execute
-repository code. The direct git/gh write path is denied with --disallowedTools;
-the manager's review of the actual diff is what keeps a worker change from
-merging itself. Session persistence is left enabled so FILE.session can be
-resumed later. Heartbeats indicate process liveness only.
+can never be used. The worker is instructed to review only in review mode, to
+edit only inside the supplied worktree in implement mode, and to leave its
+edits uncommitted for the manager. Review uses plan permission mode plus a
+read-only tool allowlist; implement uses acceptEdits with a repository
+build/test allowlist. Confinement is permission-based, not an OS sandbox:
+--allowedTools only decides which commands run without a prompt, and in both
+modes the allow-listed build/test commands execute repository code, so they can
+still perform arbitrary file writes and subprocess work. The direct git/gh
+write path is denied with --disallowedTools; the manager's review of the actual
+diff is the acceptance gate. Session persistence is left enabled so
+FILE.session can be resumed later. Heartbeats indicate process liveness only.
 CLAUDE_HEARTBEAT_SECONDS sets the heartbeat interval (default 15).
 HELP
 }
@@ -85,7 +88,9 @@ case "$mode" in
     # Read tools plus read-only shell. This is an allow-list, not a sandbox: in
     # a non-interactive -p session only these commands skip the prompt. Review's
     # read-only intent rests on plan mode plus the denied git/gh write path
-    # below; no edits, no commits, no network writes.
+    # below, but the allow-listed `npx tsx`/`npx eslint`/`npx tsc` execute
+    # repository code, so they can still write files, commit through a spawned
+    # subprocess, or reach the network; the permission rules do not prevent it.
     allowed_tool_list=(
       Read Glob Grep
       'Bash(git diff)' 'Bash(git diff *)'
@@ -101,9 +106,10 @@ case "$mode" in
     permission_mode=acceptEdits
     [[ -n "$worktree" ]] || fail '--mode implement requires --worktree DIR'
     # Repository build/test commands. These run repository code, so they are
-    # escape hatches rather than a sandbox; the direct git/gh write path is
-    # denied in disallowed_tool_list below, and the worker leaves edits
-    # uncommitted for the manager.
+    # escape hatches rather than a sandbox: in implement mode they can still
+    # perform arbitrary file writes and subprocess work. The direct git/gh write
+    # path is denied in disallowed_tool_list below, and the worker is instructed
+    # to leave edits uncommitted for the manager.
     allowed_tool_list=(
       Read Glob Grep Edit Write
       'Bash(npm run build:gates)' 'Bash(npm run build:gates *)'
