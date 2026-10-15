@@ -57,13 +57,16 @@ to implementing the slice yourself or abandoning the delegation.
 - `claude` runs the Claude Code CLI with its **own configured login**, so it
   draws on that account's plan and its weekly limit. It never reads or forwards
   `.env.agent` and scrubs inherited DeepSeek/Anthropic endpoint variables.
-  Review uses `--permission-mode plan` with a read-only tool allowlist;
-  implementation uses `--permission-mode acceptEdits` with a repository
-  build/test allowlist. That allowlist is not a sandbox — its build/test
-  commands execute repository code — so confinement is permission-based, not an
-  OS boundary (unlike the DSH and Codex modes). The direct git/gh write path is
-  denied with `--disallowedTools`, and the manager's review of the actual diff
-  is what keeps a worker change from merging itself. A `claude`
+  The worker is instructed to review only in review mode and to edit only
+  inside the supplied worktree in implement mode, leaving edits uncommitted for
+  the manager; review passes `--permission-mode plan` with a tool allowlist,
+  implementation `--permission-mode acceptEdits` with a repository build/test
+  allowlist. That allowlist is not a sandbox — in both modes its build/test
+  commands execute repository code and can still write files or spawn
+  subprocesses — so confinement is permission-based, not an OS boundary (unlike
+  the DSH and Codex modes). The direct git/gh write path is denied with
+  `--disallowedTools`; the manager's review of the actual diff is the
+  acceptance gate. A `claude`
   implementation worker must leave edits uncommitted and report `COMMIT: none`;
   after a zero-exit run with changes, `dispatch-task.sh` creates exactly one
   manager-owned commit. Failed and no-change runs are never auto-committed.
