@@ -23,6 +23,16 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "expected output to contain: $needle"
 }
 
+# The fake claude records its argv as one `args:` line of ` <value>` items.
+# Pull out a single flag's value so the allow-list can be checked on its own,
+# independently of the disallowed list that follows it.
+arg_value() { # $1 = flag name, $2 = record file
+  local args
+  args="$(sed -n 's/^args://p' "$2")"
+  args="${args#*<--$1> <}"
+  printf '%s' "${args%%>*}"
+}
+
 mkdir -p "$TEMP_DIR/bin"
 # One fake claude serves both Claude-flavoured providers: claude-deepseek runs
 # it with --output-format text (args and stdin pass through), while the new
@@ -270,8 +280,11 @@ printf 'implement\n' | PATH="$TEMP_DIR/bin:$PATH" HOME="$TEMP_DIR/home" \
     --base "$implement_base" --skip-build >/dev/null
 assert_contains "$(cat "$claude_impl_model_record")" '<--model> <impl-forward-model>'
 assert_contains "$(cat "$claude_impl_model_record")" '<acceptEdits>'
-assert_not_contains "$(cat "$claude_impl_model_record")" 'Bash(git'
-assert_not_contains "$(cat "$claude_impl_model_record")" 'Bash(gh'
+# The denying specs reach the CLI, while the build/test allow-list itself
+# contains no commit-capable command spec.
+assert_contains "$(cat "$claude_impl_model_record")" '<--disallowedTools>'
+assert_not_contains "$(arg_value allowedTools "$claude_impl_model_record")" 'Bash(git'
+assert_not_contains "$(arg_value allowedTools "$claude_impl_model_record")" 'Bash(gh'
 
 # ---- issue #637: default base resolves outside any checkout, even when the ----
 # ---- invoked copy of dispatch-task.sh lives in a worktree                   ----

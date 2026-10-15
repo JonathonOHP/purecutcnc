@@ -75,8 +75,11 @@ heartbeats indicate process liveness only. Dispatch in the background and poll
 scripts/worker-status.sh --slug SLUG instead of killing a long run.
 
 DSH/Claude/Codex commit fallback: these providers edit the linked worktree but
-either cannot write its shared Git metadata (the DSH/Codex sandbox) or are
-denied commit-capable tools (claude). After a zero-exit DSH, Claude, or Codex
+either cannot write its shared Git metadata (the DSH/Codex sandbox) or have the
+direct git/gh write path denied with --disallowedTools (claude). Claude's
+allow-listed build/test commands still execute repository code, so its
+confinement is permission-based rather than a sandbox; the real guarantee is the
+manager's review of the actual diff. After a zero-exit DSH, Claude, or Codex
 implementation run, this manager-side dispatcher creates one commit if there
 are changes. It never auto-commits a failed or no-change DSH/Claude/Codex run.
 Claude/DeepSeek workers retain their existing worker-owned commit behavior.
@@ -324,9 +327,9 @@ if [[ "$worker_status" -ne 0 ]]; then
 fi
 
 # A linked worktree's .git file points to shared metadata in the primary
-# checkout. DSH/Codex cannot write it and the claude leaf is denied
-# commit-capable tools, so all three leave Git writes to the manager, which
-# turns their successful edits into a single commit.
+# checkout. DSH/Codex cannot write it, and the claude leaf has the direct git/gh
+# write path denied with --disallowedTools, so all three leave Git writes to the
+# manager, which turns their successful edits into a single commit.
 # Keep this provider-specific: Claude/DeepSeek workers still own their commit.
 manager_commit_result="not-applicable (worker-owned commit)"
 manager_commit_failed=false

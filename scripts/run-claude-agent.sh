@@ -8,6 +8,14 @@
 # Review is read-only; implement edits only inside the worktree and leaves them
 # uncommitted for the manager to commit. Heartbeats indicate process liveness
 # only, never tool activity.
+#
+# Confinement is permission-based, not an OS sandbox. --allowedTools is an
+# allow-list, not a sandbox: it decides only which commands run without a prompt
+# in a non-interactive -p session. The direct git/gh write path is explicitly
+# denied with --disallowedTools, but the allow-listed `npx tsx`, `npx eslint`
+# and `npm run …` execute repository code, so they remain general-purpose escape
+# hatches. The real guarantee that a worker cannot commit and merge is the
+# manager's review of the actual diff — a worker commit can never merge itself.
 
 set -euo pipefail
 
@@ -17,7 +25,8 @@ readonly PROGRESS_FILTER="$SCRIPT_DIR/worker-progress-filter.jq"
 # Flag verification against the installed Claude Code 2.1.206 (`claude --help`):
 #   --permission-mode (acceptEdits|auto|bypassPermissions|manual|dontAsk|plan),
 #   --output-format (text|json|stream-json), --model, --allowedTools,
-#   --verbose, --include-partial-messages and -p/--print all exist.
+#   --disallowedTools, --verbose, --include-partial-messages and -p/--print all
+#   exist.
 #   `--max-turns` does NOT exist in 2.1.206, so this leaf deliberately omits it
 #   rather than inventing a flag; tool-spec syntax uses the form `--help` shows
 #   (e.g. `Bash(git *)`), never a remembered one.
@@ -40,9 +49,14 @@ Uses the Claude Code CLI's own configured login, never .env.agent, and scrubs
 inherited DeepSeek/Anthropic endpoint variables so a legacy DeepSeek endpoint
 can never be used. Review runs read-only (plan permission mode plus a read-only
 tool allowlist); implement runs acceptEdits with a repository build/test
-allowlist and leaves edits uncommitted for the manager. Session persistence is
-left enabled so FILE.session can be resumed later. Heartbeats indicate process
-liveness only. CLAUDE_HEARTBEAT_SECONDS sets the heartbeat interval (default 15).
+allowlist and leaves edits uncommitted for the manager. Confinement is
+permission-based, not an OS sandbox: --allowedTools only decides which commands
+run without a prompt, and the allow-listed build/test commands execute
+repository code. The direct git/gh write path is denied with --disallowedTools;
+the manager's review of the actual diff is what keeps a worker change from
+merging itself. Session persistence is left enabled so FILE.session can be
+resumed later. Heartbeats indicate process liveness only.
+CLAUDE_HEARTBEAT_SECONDS sets the heartbeat interval (default 15).
 HELP
 }
 
@@ -68,8 +82,10 @@ done
 case "$mode" in
   review)
     permission_mode=plan
-    # Read tools plus read-only shell only; anything else fails closed because
-    # -p is non-interactive. No edits, no commits, no network writes.
+    # Read tools plus read-only shell. This is an allow-list, not a sandbox: in
+    # a non-interactive -p session only these commands skip the prompt. Review's
+    # read-only intent rests on plan mode plus the denied git/gh write path
+    # below; no edits, no commits, no network writes.
     allowed_tool_list=(
       Read Glob Grep
       'Bash(git diff)' 'Bash(git diff *)'
@@ -84,8 +100,10 @@ case "$mode" in
   implement)
     permission_mode=acceptEdits
     [[ -n "$worktree" ]] || fail '--mode implement requires --worktree DIR'
-    # Repository build/test commands only. `git commit`, `git push` and `gh` are
-    # absent on purpose: the worker leaves edits uncommitted for the manager.
+    # Repository build/test commands. These run repository code, so they are
+    # escape hatches rather than a sandbox; the direct git/gh write path is
+    # denied in disallowed_tool_list below, and the worker leaves edits
+    # uncommitted for the manager.
     allowed_tool_list=(
       Read Glob Grep Edit Write
       'Bash(npm run build:gates)' 'Bash(npm run build:gates *)'
@@ -98,6 +116,21 @@ case "$mode" in
   *) fail '--mode review or --mode implement is required' ;;
 esac
 allowed_tools="$(IFS=,; printf '%s' "${allowed_tool_list[*]}")"
+
+# Deny rules take precedence over allow rules, so this explicitly closes the
+# direct git/gh write path in both modes. It cannot sandbox the allow-listed
+# commands themselves: `npx tsx` and friends execute repository code.
+disallowed_tool_list=(
+  'Bash(git commit)' 'Bash(git commit *)'
+  'Bash(git add)' 'Bash(git add *)'
+  'Bash(git push)' 'Bash(git push *)'
+  'Bash(git reset *)'
+  'Bash(git checkout *)'
+  'Bash(git switch *)'
+  'Bash(git stash *)'
+  'Bash(gh)' 'Bash(gh *)'
+)
+disallowed_tools="$(IFS=,; printf '%s' "${disallowed_tool_list[*]}")"
 
 # A caller-supplied model wins; otherwise honour CLAUDE_AGENT_MODEL; otherwise
 # omit --model and let the CLI use its own configured default.
@@ -132,11 +165,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The worker prompt states the manager-commit rule the caller enforces. The
+# git/gh ban is backed by --disallowedTools above, not by an OS sandbox.
 {
   printf '%s\n\n' "$task"
   printf 'Launcher constraints: do not read .env.agent or use legacy DeepSeek credentials.\n'
   if [[ "$mode" == implement ]]; then
-    printf 'Remain in the supplied worktree. Leave all edits uncommitted; do not run git commit, git push, or gh. The manager owns the commit. Report COMMIT: none in your final completion block.\n'
+    printf 'Remain in the supplied worktree. Leave all edits uncommitted; the direct git commit/add/push/reset/checkout/switch/stash and gh commands are denied. The manager owns the commit. Report COMMIT: none in your final completion block.\n'
   else
     printf 'Review only. Do not edit, stage, or commit files. Report COMMIT: none.\n'
   fi
@@ -168,6 +203,7 @@ claude_args=(
   -p
   --permission-mode "$permission_mode"
   --allowedTools "$allowed_tools"
+  --disallowedTools "$disallowed_tools"
 )
 [[ -n "$model" ]] && claude_args+=(--model "$model")
 if [[ "$streaming" == true ]]; then

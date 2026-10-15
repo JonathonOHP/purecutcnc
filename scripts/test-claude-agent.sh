@@ -15,6 +15,17 @@ fail() { printf 'test-claude-agent: %s\n' "$*" >&2; exit 1; }
 contains() { [[ "$1" == *"$2"* ]] || fail "missing: $2"; }
 not_contains() { [[ "$1" != *"$2"* ]] || fail "unexpected: $2"; }
 
+# The recorded argv prints each argument as ` <value>` on one `args:` line.
+# Pull out a single flag's value so the allow-list can be checked on its own,
+# independently of the disallowed list that follows it.
+recorded_arg() { # $1 = flag name
+  local args
+  args="$(sed -n 's/^args://p' "$FAKE_CLAUDE_RECORD")"
+  args="${args#*<--$1> <}"
+  printf '%s' "${args%%>*}"
+}
+readonly EXPECTED_DISALLOWED='Bash(git commit),Bash(git commit *),Bash(git add),Bash(git add *),Bash(git push),Bash(git push *),Bash(git reset *),Bash(git checkout *),Bash(git switch *),Bash(git stash *),Bash(gh),Bash(gh *)'
+
 mkdir -p "$TEMP_DIR/bin" "$TEMP_DIR/repo with spaces/scripts"
 
 cat > "$TEMP_DIR/bin/claude" <<'MOCK'
@@ -90,6 +101,15 @@ contains "$record" 'Bash(git status *)'
 contains "$record" 'Bash(npx tsx *)'
 contains "$record" 'Bash(npx eslint *)'
 contains "$record" 'Bash(npx tsc *)'
+# The denying specs reach the CLI in review argv too; the allow-list itself
+# stays read-only (no commit-capable spec).
+contains "$record" '<--disallowedTools>'
+[[ "$(recorded_arg disallowedTools)" == "$EXPECTED_DISALLOWED" ]] \
+  || fail "review disallowed list: $(recorded_arg disallowedTools)"
+for denied in 'Bash(git commit' 'Bash(git add' 'Bash(git push' 'Bash(git reset' \
+              'Bash(git checkout' 'Bash(git switch' 'Bash(git stash' 'Bash(gh'; do
+  not_contains "$(recorded_arg allowedTools)" "$denied"
+done
 not_contains "$record" 'Edit'
 not_contains "$record" 'Write'
 not_contains "$record" 'bypassPermissions'
@@ -125,8 +145,13 @@ contains "$record" 'Bash(npx eslint *)'
 contains "$record" 'Bash(npx tsc *)'
 contains "$record" 'Bash(npm run check:i18n)'
 contains "$record" 'Grep,Edit,Write'
-not_contains "$record" 'Bash(git'
-not_contains "$record" 'Bash(gh'
+# Implement argv carries the denying specs; the build/test allow-list contains
+# no commit-capable command spec of its own.
+contains "$record" '<--disallowedTools>'
+[[ "$(recorded_arg disallowedTools)" == "$EXPECTED_DISALLOWED" ]] \
+  || fail "implement disallowed list: $(recorded_arg disallowedTools)"
+not_contains "$(recorded_arg allowedTools)" 'Bash(git'
+not_contains "$(recorded_arg allowedTools)" 'Bash(gh'
 not_contains "$record" 'bypassPermissions'
 contains "$(cat "$FAKE_CLAUDE_PROMPT")" 'Leave all edits uncommitted'
 contains "$(cat "$FAKE_CLAUDE_PROMPT")" 'COMMIT: none'
