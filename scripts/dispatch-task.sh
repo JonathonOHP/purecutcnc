@@ -20,6 +20,7 @@ else
   exit 1
 fi
 readonly CLAUDE_DEEPSEEK_LEAF="$SCRIPT_DIR/run-claude-deepseek-agent.sh"
+readonly CLAUDE_LEAF="$SCRIPT_DIR/run-claude-agent.sh"
 readonly DSH_LEAF="$SCRIPT_DIR/run-dsh-agent.sh"
 readonly CODEX_LEAF="$SCRIPT_DIR/run-codex-agent.sh"
 readonly DEFAULT_BASE="feat/core-arch-simplification"
@@ -51,7 +52,9 @@ Options:
   --issue NN          Issue number (implement mode; used in the branch name).
   --task-slug SLUG    Short kebab-case slug (implement mode; worktree dir + branch).
   --base BRANCH       Integration branch to branch from (default: feat/core-arch-simplification).
-  --provider NAME     claude-deepseek (default), dsh, or codex.
+  --provider NAME     claude-deepseek (default), claude, dsh, or codex.
+  --model MODEL       Model passed to the claude provider only (also settable
+                      through CLAUDE_AGENT_MODEL). Rejected with any other provider.
   --handoff REPO_PATH Optional tracked, relative handoff path in the task
                       worktree. The full file stays out of command arguments.
   --mode MODE         implement (default) or review.
@@ -62,24 +65,30 @@ Options:
                       only writes one when this is set explicitly).
   --help              Show this help.
 
-Progress: Claude/DeepSeek logs observed worker events. DSH tails its own active
+Progress: Claude/DeepSeek logs observed worker events. The claude provider
+streams observed Claude activity into the log and saves the result text at
+FILE.final.md and the session id at FILE.session. DSH tails its own active
 session artifact for observed assistant, tool-call, and tool-result events;
 process-alive heartbeats remain a fallback. Codex writes observed stderr and
 lifecycle markers to the log, with its final message at FILE.final.md; its
 heartbeats indicate process liveness only. Dispatch in the background and poll
 scripts/worker-status.sh --slug SLUG instead of killing a long run.
 
-DSH/Codex commit fallback: workspace-write can edit the linked worktree but cannot
-write its shared Git metadata outside that boundary. After a zero-exit DSH/Codex
+DSH/Claude/Codex commit fallback: these providers edit the linked worktree but
+either cannot write its shared Git metadata (the DSH/Codex sandbox) or are
+denied commit-capable tools (claude). After a zero-exit DSH, Claude, or Codex
 implementation run, this manager-side dispatcher creates one commit if there
-are changes. It never auto-commits a failed or no-change DSH/Codex run. Claude/DeepSeek
-workers retain their existing worker-owned commit behavior.
+are changes. It never auto-commits a failed or no-change DSH/Claude/Codex run.
+Claude/DeepSeek workers retain their existing worker-owned commit behavior.
 
 Permissions: every provider sends the prompt to its configured external service,
 so get explicit approval first. claude-deepseek reads .env.agent and runs a
-bypassPermissions Claude worker; dsh uses its own configured credentials and
-confines worker tool calls to DSH's read-only/workspace-write modes. Codex uses
-its own login and read-only/workspace-write sandbox; it never reads .env.agent.
+bypassPermissions Claude worker; the claude provider uses the Claude Code CLI's
+own login (drawing on that account's weekly limit) and never reads .env.agent,
+running read-only review or acceptEdits implementation with a build/test
+allowlist; dsh uses its own configured credentials and confines worker tool
+calls to DSH's read-only/workspace-write modes. Codex uses its own login and
+read-only/workspace-write sandbox; it never reads .env.agent.
 EOF
 }
 
@@ -136,13 +145,16 @@ base="$DEFAULT_BASE"
 review_worktree=""
 skip_build=false
 progress_log=""
+model=""
+model_given=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --issue)        [[ $# -ge 2 ]] || fail "--issue requires a number"; issue="$2"; shift 2 ;;
     --task-slug)    [[ $# -ge 2 ]] || fail "--task-slug requires a value"; slug="$2"; shift 2 ;;
     --base)         [[ $# -ge 2 ]] || fail "--base requires a branch"; base="$2"; shift 2 ;;
-    --provider)     [[ $# -ge 2 ]] || fail "--provider requires claude-deepseek, dsh, or codex"; provider="$2"; shift 2 ;;
+    --provider)     [[ $# -ge 2 ]] || fail "--provider requires claude-deepseek, claude, dsh, or codex"; provider="$2"; shift 2 ;;
+    --model)        [[ $# -ge 2 ]] || fail "--model requires a model name"; model="$2"; model_given=true; shift 2 ;;
     --handoff)      [[ $# -ge 2 ]] || fail "--handoff requires a tracked repository path"; handoff="$2"; shift 2 ;;
     --mode)         [[ $# -ge 2 ]] || fail "--mode requires implement or review"; mode="$2"; shift 2 ;;
     --worktree)     [[ $# -ge 2 ]] || fail "--worktree requires a directory"; review_worktree="$2"; shift 2 ;;
@@ -169,6 +181,9 @@ case "$provider" in
   claude-deepseek)
     leaf="$CLAUDE_DEEPSEEK_LEAF"
     ;;
+  claude)
+    leaf="$CLAUDE_LEAF"
+    ;;
   dsh)
     leaf="$DSH_LEAF"
     ;;
@@ -176,9 +191,11 @@ case "$provider" in
     leaf="$CODEX_LEAF"
     ;;
   *)
-    fail "--provider must be claude-deepseek, dsh, or codex: $provider"
+    fail "--provider must be claude-deepseek, claude, dsh, or codex: $provider"
     ;;
 esac
+[[ "$model_given" == false || "$provider" == "claude" ]] \
+  || fail "--model is only supported with --provider claude: $provider"
 [[ -x "$leaf" ]] || fail "leaf launcher not found or not executable: $leaf"
 
 # Without redirection a worker can block waiting for the terminal.
@@ -228,8 +245,9 @@ if [[ "$provider" == "claude-deepseek" ]]; then
   # checkout; it is never copied into a task worktree.
   export DEEPSEEK_AGENT_ENV_FILE="${DEEPSEEK_AGENT_ENV_FILE:-$REPO_ROOT/.env.agent}"
 else
-  # DSH and Codex resolve their configured credentials themselves. Do not expose the legacy
-  # credential-file path to this provider.
+  # The claude provider (Claude Code's own login), DSH and Codex resolve their
+  # configured credentials themselves. Do not expose the legacy credential-file
+  # path to any of them.
   unset DEEPSEEK_AGENT_ENV_FILE
 fi
 
@@ -238,6 +256,9 @@ run_review() {
   local -a leaf_args=(--mode review --worktree "$review_worktree")
   if [[ "$provider" == "claude-deepseek" ]]; then
     leaf_args+=(--output-format text)
+  fi
+  if [[ "$provider" == "claude" && -n "$model" ]]; then
+    leaf_args+=(--model "$model")
   fi
   [[ -n "$progress_log" ]] && leaf_args+=(--progress-log "$progress_log")
   "$leaf" "${leaf_args[@]}" < "$worker_prompt_file" || status=$?
@@ -293,6 +314,9 @@ leaf_args=(--mode implement --worktree "$worktree_dir" --progress-log "$progress
 if [[ "$provider" == "claude-deepseek" ]]; then
   leaf_args+=(--allow-bypass --output-format text)
 fi
+if [[ "$provider" == "claude" && -n "$model" ]]; then
+  leaf_args+=(--model "$model")
+fi
 "$leaf" "${leaf_args[@]}" < "$worker_prompt_file" || worker_status=$?
 if [[ "$worker_status" -ne 0 ]]; then
   printf '\n!! worker exited non-zero (%s); worktree left in place for inspection !!\n' \
@@ -300,16 +324,18 @@ if [[ "$worker_status" -ne 0 ]]; then
 fi
 
 # A linked worktree's .git file points to shared metadata in the primary
-# checkout. DSH/Codex workspace-write workers leave Git writes to the manager,
-# which turns their successful edits into a single commit.
+# checkout. DSH/Codex cannot write it and the claude leaf is denied
+# commit-capable tools, so all three leave Git writes to the manager, which
+# turns their successful edits into a single commit.
 # Keep this provider-specific: Claude/DeepSeek workers still own their commit.
 manager_commit_result="not-applicable (worker-owned commit)"
 manager_commit_failed=false
 commit_owner="$provider"
-if [[ "$provider" == "dsh" || "$provider" == "codex" ]]; then
+if [[ "$provider" == "dsh" || "$provider" == "codex" || "$provider" == "claude" ]]; then
   commit_owner="manager"
   commit_provider="$provider"
   [[ "$provider" != "dsh" ]] || commit_provider="DSH"
+  [[ "$provider" != "claude" ]] || commit_provider="Claude"
   if [[ "$worker_status" -ne 0 ]]; then
     manager_commit_result="not-attempted (worker failed)"
   elif [[ -z "$(git -C "$worktree_dir" status --short)" ]]; then
