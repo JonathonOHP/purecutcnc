@@ -52,7 +52,7 @@ Options:
   --issue NN          Issue number (implement mode; used in the branch name).
   --task-slug SLUG    Short kebab-case slug (implement mode; worktree dir + branch).
   --base BRANCH       Integration branch to branch from (default: feat/core-arch-simplification).
-  --provider NAME     claude-deepseek (default), claude, dsh, or codex.
+  --provider NAME     claude-deepseek, claude, dsh (default), or codex.
   --model MODEL       Model passed to the claude provider only (also settable
                       through CLAUDE_AGENT_MODEL). Rejected with any other provider.
   --handoff REPO_PATH Optional tracked, relative handoff path in the task
@@ -141,7 +141,7 @@ assert_outside_checkouts() {
 }
 
 mode="implement"
-provider="claude-deepseek"
+provider="dsh"
 handoff=""
 issue=""
 slug=""

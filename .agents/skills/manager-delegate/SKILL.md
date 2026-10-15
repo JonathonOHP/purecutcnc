@@ -51,7 +51,7 @@ invoking dispatch — and do not silently skip the dispatch step.** If the
 sandbox/approval blocks it, surface the blocker and ask; never quietly fall back
 to implementing the slice yourself or abandoning the delegation.
 
-- `claude-deepseek` (the default) reads `.env.agent`, connects to the DeepSeek
+- `claude-deepseek` reads `.env.agent`, connects to the DeepSeek
   endpoint, and spawns a `bypassPermissions` Claude worker. It is the legacy
   credential-backed path.
 - `claude` runs the Claude Code CLI with its **own configured login**, so it
@@ -72,7 +72,7 @@ to implementing the slice yourself or abandoning the delegation.
   manager-owned commit. Failed and no-change runs are never auto-committed.
   `--model MODEL` (or `CLAUDE_AGENT_MODEL`) selects the model; otherwise the
   CLI's own default is used.
-- `dsh` runs `dsh --profile headless` using DSH's configured credential store.
+- `dsh` (the default) runs `dsh --profile headless` using DSH's configured credential store.
   It does not read or forward `.env.agent`; DSH persists normal profile/session
   state under `~/.dsh`. Review workers use DSH `read-only`; implementation
   workers use DSH `workspace-write` rooted at the task worktree. Any DSH

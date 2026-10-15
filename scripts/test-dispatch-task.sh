@@ -111,13 +111,22 @@ prepare_implement_fixture() {
   printf '%s' "$fixture_repo"
 }
 
-# ---- omitted provider preserves the Claude/DeepSeek dispatch path ----
-claude_output="$(printf 'default task\n' | PATH="$TEMP_DIR/bin:$PATH" \
+# ---- omitted provider selects the DSH dispatch path ----
+# The dsh mock does not echo stdin, so the prompt text is not asserted here.
+default_output="$(printf 'default task\n' | PATH="$TEMP_DIR/bin:$PATH" \
   DEEPSEEK_AGENT_ENV_FILE="$TEMP_DIR/agent.env" "$DISPATCH" --mode review --worktree "$TEMP_DIR/wt")"
-assert_contains "$claude_output" 'provider=claude'
-assert_contains "$claude_output" '<--permission-mode>'
-assert_contains "$claude_output" '<plan>'
-assert_contains "$claude_output" 'default task'
+assert_contains "$default_output" 'provider=dsh sandbox=<read-only>'
+assert_contains "$default_output" '<--profile>'
+assert_contains "$default_output" '<headless>'
+
+# ---- explicit claude-deepseek preserves the legacy credential-backed path ----
+claude_deepseek_output="$(printf 'default task\n' | PATH="$TEMP_DIR/bin:$PATH" \
+  DEEPSEEK_AGENT_ENV_FILE="$TEMP_DIR/agent.env" "$DISPATCH" \
+    --provider claude-deepseek --mode review --worktree "$TEMP_DIR/wt")"
+assert_contains "$claude_deepseek_output" 'provider=claude'
+assert_contains "$claude_deepseek_output" '<--permission-mode>'
+assert_contains "$claude_deepseek_output" '<plan>'
+assert_contains "$claude_deepseek_output" 'default task'
 
 # ---- explicit DSH provider selects the DSH leaf and read-only mode ----
 dsh_output="$(printf 'dsh task\n' | PATH="$TEMP_DIR/bin:$PATH" \
