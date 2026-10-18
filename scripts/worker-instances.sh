@@ -160,6 +160,7 @@ patterns=(
   'run-[a-z-]*-agent\.sh'
   'dispatch-task\.sh'
   'codex exec'
+  'claude -p'
   'MacOS/claude'
   'dsh --profile'
 )
@@ -207,6 +208,15 @@ flag_value() {
 
 cwd_for_pid() {
   lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1 || true
+}
+
+# True when a leaf is an ancestor of PID: the leaf row already represents that
+# worker, so the raw CLI child must not add a second row.
+pid_is_leaf_descendant() {
+  case " $leaf_descendants " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
 }
 
 cmd_for_pid() {
@@ -341,6 +351,8 @@ row_idle=()
 row_branch=()
 row_log=()
 seen_worktrees=""
+seen_slugs=""
+leaf_descendants=" "
 hidden_dsh=0
 hidden_claude=0
 
@@ -361,16 +373,18 @@ add_row() {
   [[ -n "$mode" ]] || mode="-"
   if [[ -n "$slug_filter" && "$slug" != "$slug_filter" ]]; then return 0; fi
 
-  # Leaf first, then raw CLI, then dispatcher: the first row for a worktree
-  # wins. The key is the worktree's basename so a dispatcher still dedupes when
-  # it was launched with a different PURECUT_WORKTREE_BASE. App sessions pass
-  # dedupe=0 — two chat sessions in one checkout are separate processes.
+  # One row per (provider, worktree): a provider's forks of the same leaf
+  # collapse, while two providers working in the same directory stay separate.
+  # A raw CLI that a leaf spawned is skipped by ancestry before reaching here,
+  # and a dispatcher is skipped by slug — see seen_slugs. App sessions pass
+  # dedupe=0 because two chat sessions in one checkout are separate processes.
   if [[ -n "$wt" && "$dedupe" == 1 ]]; then
-    key="$(basename "$wt")"
+    key="$provider|$(basename "$wt")"
     case "$seen_worktrees" in
       *"|$key|"*) return 0 ;;
     esac
     seen_worktrees="$seen_worktrees|$key|"
+    seen_slugs="$seen_slugs|$(basename "$wt")|"
   fi
 
   state="no progress log"
@@ -431,6 +445,7 @@ collect_leaf() {
 
 collect_codex() {
   local pid="$1" cmd="$2" dir sandbox mode
+  pid_is_leaf_descendant "$pid" && return 0
   dir="$(flag_value -C "$cmd" || true)"
   [[ -n "$dir" ]] || dir="$(cwd_for_pid "$pid")"
   sandbox="$(flag_value -s "$cmd" || true)"
@@ -444,6 +459,7 @@ collect_codex() {
 
 collect_dsh() {
   local pid="$1" cmd="$2" profile wt
+  pid_is_leaf_descendant "$pid" && return 0
   profile="$(flag_value --profile "$cmd" || true)"
   wt="$(cwd_for_pid "$pid")"
   if [[ "$profile" == "headless" ]]; then
@@ -459,6 +475,7 @@ collect_dsh() {
 
 collect_claude() {
   local pid="$1" cmd="$2" permission wt mode
+  pid_is_leaf_descendant "$pid" && return 0
   permission="$(flag_value --permission-mode "$cmd" || true)"
   case "$permission" in
     plan) mode="review" ;;
@@ -486,14 +503,20 @@ collect_dispatch() {
   mode="$(flag_value --mode "$cmd" || true)"
   [[ -n "$mode" ]] || mode="implement"
   slug="$(flag_value --task-slug "$cmd" || true)"
+  wt="$(flag_value --worktree "$cmd" || true)"
   if [[ -z "$slug" ]]; then
-    wt="$(flag_value --worktree "$cmd" || true)"
     [[ -n "$wt" ]] || wt="$(cwd_for_pid "$pid")"
     [[ -n "$wt" ]] && slug="$(basename "$wt")"
   fi
   [[ -n "$slug" ]] || return 0
-  wt="$WORKTREE_BASE/$slug"
-  log="$WORKTREE_BASE/$slug.progress.log"
+  [[ -n "$wt" ]] || wt="$WORKTREE_BASE/$slug"
+  log="$(flag_value --progress-log "$cmd" || true)"
+  [[ -n "$log" ]] || log="$WORKTREE_BASE/$slug.progress.log"
+  # A live worker row for this slug already says what the dispatcher is doing;
+  # the dispatcher row only covers the build-gate window after the worker exits.
+  case "$seen_slugs" in
+    *"|$slug|"*) return 0 ;;
+  esac
   add_row "$pid" "$provider" "$mode" "$slug" "$wt" "$log"
 }
 
@@ -501,6 +524,27 @@ collect_dispatch() {
 while IFS=$'\t' read -r pid cmd; do
   [[ -n "$pid" ]] || continue
   collect_leaf "$pid" "$cmd"
+done <"$leaves_file"
+
+# A leaf spawns the provider CLI as a child (`bash run-dsh-agent.sh` -> `node
+# dsh`), so the raw CLI discovered by its own pattern is the same worker. Walk
+# each leaf's process subtree and remember it; without this, dedupe by
+# directory would also hide an independent worker of another provider.
+while IFS=$'\t' read -r leaf_pid _; do
+  [[ -n "$leaf_pid" ]] || continue
+  frontier="$leaf_pid"
+  depth=0
+  while [[ -n "$frontier" && "$depth" -lt 5 ]]; do
+    next_frontier=""
+    for parent in $frontier; do
+      for child_pid in $(pgrep -P "$parent" 2>/dev/null || true); do
+        leaf_descendants="$leaf_descendants$child_pid "
+        next_frontier="$next_frontier $child_pid"
+      done
+    done
+    frontier="$next_frontier"
+    depth=$((depth + 1))
+  done
 done <"$leaves_file"
 
 while IFS=$'\t' read -r pid cmd; do
