@@ -36,6 +36,7 @@
 
 import { generateEdgeRouteToolpath } from './edge'
 import { isEntryHandoffMove } from './entry'
+import { applyEdgeRouteTabs } from './tabs'
 import { projectWithFeatures } from '../../test/projectFixtures'
 import {
   defaultTool,
@@ -310,10 +311,9 @@ function testATabPushesTheRampToTheOtherActualSegment(): void {
     x: 7.125 - 0.25, y: 5.0 - 0.25, w: 0.5, h: 0.5,
     z_top: 0.5, z_bottom: 0, visible: true, shape: 'rect',
   }
-  const result = generateEdgeRouteToolpath(
-    inchReproProject([tab]),
-    outsideOperation(['part'], { stepdown: 0.25, xyLeadStrategy: 'arc' }),
-  )
+  const tabbedProject = inchReproProject([tab])
+  const operation = outsideOperation(['part'], { stepdown: 0.25, xyLeadStrategy: 'arc' })
+  const result = generateEdgeRouteToolpath(tabbedProject, operation)
   assertEntryIsKerfBound(result, 'tabbed board')
   assert(!warned(result, 'entryStrategyFallback'),
     'tabbed board: the other real adjacent segment is used rather than the broad domain')
@@ -331,6 +331,28 @@ function testATabPushesTheRampToTheOtherActualSegment(): void {
   }
   assert(worstBite <= KERF_TOLERANCE,
     `tabbed board: the entry never bites the tab below its top (${worstBite.toFixed(6)} in)`)
+
+  // The ramp was generated before the tab pass; this proves the FINAL
+  // `applyTabsToEdgeRoute` actually ran on the on-path stream below the tab
+  // top, rather than the tab being honoured only by the entry placement.
+  const untabbed = generateEdgeRouteToolpath(
+    inchReproProject(),
+    operation,
+  )
+  const tabbed = applyEdgeRouteTabs(tabbedProject, operation, result)
+  const verticalSignature = (moves: ToolpathMove[]): string => JSON.stringify(
+    moves.map((move) => [move.kind, Number(move.from.z.toFixed(6)), Number(move.to.z.toFixed(6))]),
+  )
+  assert(verticalSignature(tabbed.moves) !== verticalSignature(untabbed.moves),
+    'tabbed board: the final tab pass lifted/split moves below the tab top')
+  assert(!warned(tabbed, 'tabsBlockFinalDepth'),
+    'tabbed board: the tab interrupts the final pass rather than replacing it')
+  // The tab pass rebuilds moves, so identity-based entry markers do not survive;
+  // the geometric claims still do.
+  assert(maxCutterCentreOffCutPath(tabbed.moves) <= KERF_TOLERANCE,
+    'tabbed board: the final stream still keeps the entry on the kerb')
+  assert(descentsIntoCut(tabbed.moves).length === 0,
+    'tabbed board: no level falls back to a single plunge after tabbing')
   console.log('tabbed ramp segment choice: PASSED')
 }
 

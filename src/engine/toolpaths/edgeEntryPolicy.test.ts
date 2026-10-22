@@ -481,7 +481,10 @@ function testTheOutsideEntryStaysOffThePartAndItsObstacles() {
     // profile are two Clipper results that agree only to the integer scale, so
     // an absolute zero would be a claim about rounding, not about gouging.
     const entryClearance = clearanceOf(samples, bossOutline)
-    const cutClearance = clearanceOf(cutSamples(result.moves), bossOutline)
+    // Denser than the entry sampling, because the baseline has to find at least
+    // as close a point on every cut segment; otherwise the comparison measures
+    // sample spacing rather than clearance.
+    const cutClearance = clearanceOf(cutSamples(result.moves, 16), bossOutline)
     assert(entryClearance >= cutClearance - 1e-9,
       `${strategy}: the entry stays as clear of the boss as the cut does`
       + ` (entry ${entryClearance.toFixed(6)} mm, cut ${cutClearance.toFixed(6)} mm)`)
