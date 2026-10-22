@@ -61,7 +61,7 @@ Current smoke targets:
 - `featureReferences.smoke.spec.ts` — linked-feature tree badges, context menu wiring, properties grouping, and load round-trip.
 - `camOperations.smoke.spec.ts` — feature-row quick operation wiring into CAM operation state.
 - `creationTargets.smoke.spec.ts` — dedicated Line creation target wiring, active drawing badge, and landscape-tablet availability.
-- `gcodeExport.smoke.spec.ts` — Export G-code dialog operation checklist: per-operation entry point, default set, none-selected disabled state.
+- `gcodeExport.smoke.spec.ts` — Export G-code dialog operation checklist (per-operation entry point, default set, none-selected disabled state) and destination policy (#1081): repeat export, cancel, and a document switch during an in-flight save always request a fresh destination.
 - `importGeometry.smoke.spec.ts` — real-user import flow: dialog open/close, button state, file upload via hidden input, SVG/DXF mode selection with classification summary verification (Auto/Paths/Solid regions), real Import button, project-role verification through existing `getProject` seam, and landscape tablet layout. Synthetic inline fixtures only.
 - `modelOrientation.smoke.spec.ts` — post-import 3D orientation for imported models (issue #241): real STL import, 90° quick-rotate committing a rigid Z band and a re-projected silhouette, non-deforming lift, and reset to import orientation.
 - `machineLibrary.smoke.spec.ts` — application machine library (issue #403): My Machines persistence across projects and restarts, one-snapshot embedding on selection, the non-blocking update warning (keep vs. explicit update), and library deletion leaving a project's embedded machine usable.
