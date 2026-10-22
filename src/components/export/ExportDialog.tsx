@@ -52,7 +52,7 @@ interface ExportDialogProps {
 
 export function ExportDialog({ onClose, service, contextRef, requestGenerationTrace, initialOperationIds }: ExportDialogProps) {
   useRestoreCanvasFocus()
-  const { project, selectProject, lastExportPath, markExported } = useProjectStore()
+  const { project, selectProject, markExported } = useProjectStore()
   const { t, languageTag } = useI18n()
 
   function td(key: keyof typeof dialogsEn, params?: MessageParams): string {
@@ -194,7 +194,9 @@ export function ExportDialog({ onClose, service, contextRef, requestGenerationTr
     const ext = activeDefinition.fileExtension
     // `exportable.gcode` was copied out above and is not re-read from state; the
     // bytes are frozen for this file action even if the preview moves on.
-    const exportedPath = await platform.saveTextFile(suggestedName, exportable.gcode, ext, lastExportPath)
+    // A previous export path is never permission to overwrite it (issue #1081):
+    // every G-code export asks for a destination, even for the same project.
+    const exportedPath = await platform.saveTextFile(suggestedName, exportable.gcode, ext, null)
     if (!exportedPath) return
 
     // The platform dialog is asynchronous, and another document can be opened
