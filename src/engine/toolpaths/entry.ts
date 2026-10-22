@@ -74,6 +74,30 @@ export interface EntryClearanceRegion {
   islands: Point[][]
 }
 
+/**
+ * The real cut polyline a requested ramp is allowed to follow (issue #1084).
+ *
+ * An edge route's outside entry used to be placed anywhere in the broad
+ * collision-free domain, which on a part standing in uncut stock includes the
+ * stock beside the profile. The ramp now has to run along an actual adjacent
+ * segment of the path the operation is about to cut, so its swept envelope is
+ * the kerf the level cut already removes.
+ *
+ * The entry vertex is the path point matched to the synthesis target:
+ * - an OPEN fragment may use only its valid forward segment, because the
+ *   reverse side is not part of the cut;
+ * - a CLOSED fragment may use either actual adjacent segment, since both are
+ *   cut. The forward one is tried first.
+ *
+ * Segments are only candidates here: `findRampPlacement` still enforces the
+ * existing minimum length, maximum run, move budget and region/tab safety, and
+ * a candidate that fails any of them leaves the constrained ramp unavailable.
+ */
+export interface EntryRampPath {
+  points: Point[]
+  closed: boolean
+}
+
 export interface EntryPolicy {
   strategy: Exclude<EntryStrategy, 'plunge'>
   rampAngle: number
@@ -84,6 +108,13 @@ export interface EntryPolicy {
   cutDirection: CutDirection
   cutSide: EntryCutSide
   clearanceRegions: EntryClearanceRegion[]
+  /**
+   * Constrain a requested ramp to this actual cut polyline. Absent preserves
+   * the legacy clearance-domain placement; `null` is an explicit "unavailable"
+   * and forces the existing warned fallback rather than returning to the broad
+   * domain chord.
+   */
+  rampPath?: EntryRampPath | null
   startZ?: number
   handoffFeedScale?: number
   onWarning?: (warning: ToolpathWarning) => void
@@ -204,6 +235,20 @@ export function withEntryStartZ(
   return policy ? { ...policy, startZ } : undefined
 }
 
+/**
+ * Constrain a requested ramp to the operation's real cut polyline (issue #1084).
+ *
+ * `null` is meaningful: the caller knows there is no adjacent cut segment to
+ * use, and the entry must fall back with the existing warning instead of
+ * silently returning to the clearance domain's broad chord.
+ */
+export function withEntryRampPath(
+  policy: EntryPolicy | undefined,
+  rampPath: EntryRampPath | null,
+): EntryPolicy | undefined {
+  return policy ? { ...policy, rampPath } : undefined
+}
+
 export function pitchFromRampAngle(pathDiameter: number, rampAngleDegrees: number): number {
   if (!(pathDiameter > 0) || !(rampAngleDegrees > 0)) return 0
   return Math.PI * pathDiameter * Math.tan(toRadians(rampAngleDegrees))
@@ -283,7 +328,12 @@ export function synthesizeEntry(
       }
     }
 
-    const rampPlacement = findRampPlacement(target, policy.clearanceRegions, policy.toolDiameter)
+    const rampPlacement = findRampPlacement(
+      target,
+      policy.clearanceRegions,
+      policy.toolDiameter,
+      policy.rampPath,
+    )
     if (rampPlacement && rampDescentMoveCount(startZ - target.z, rampPlacement, policy.rampAngle)
       <= MAX_ENTRY_DESCENT_MOVES) {
       warn({ code: 'entryStrategyFallback', params: { requested: 'helix', fallback: 'ramp' } })
@@ -302,7 +352,12 @@ export function synthesizeEntry(
     }
   }
 
-  const rampPlacement = findRampPlacement(target, policy.clearanceRegions, policy.toolDiameter)
+  const rampPlacement = findRampPlacement(
+    target,
+    policy.clearanceRegions,
+    policy.toolDiameter,
+    policy.rampPath,
+  )
   if (rampPlacement && rampDescentMoveCount(startZ - target.z, rampPlacement, policy.rampAngle)
     <= MAX_ENTRY_DESCENT_MOVES) {
     return {
@@ -634,7 +689,16 @@ function findRampPlacement(
   target: ToolpathPoint,
   regions: EntryClearanceRegion[],
   toolDiameter: number,
+  rampPath?: EntryRampPath | null,
 ): RampPlacement | null {
+  // An explicit path constraint (including the explicit "unavailable" null)
+  // replaces the broad-domain search. It never falls through to it: the whole
+  // point of the constraint is that the collision-free domain is not proof the
+  // stock there was removed (issue #1084).
+  if (rampPath !== undefined) {
+    return findConstrainedRampPlacement(target, regions, toolDiameter, rampPath)
+  }
+
   const point = { x: target.x, y: target.y }
   const candidates = regions.filter((region) => pointInRegion(point, region))
   const searchRegions = candidates.length > 0 ? candidates : regions
@@ -677,6 +741,92 @@ function findRampPlacement(
     }
   }
   return best
+}
+
+/**
+ * Ramp placement constrained to a real adjacent cut segment (issue #1084).
+ *
+ * The run is anchored at the entry vertex, because that vertex is on the cut
+ * path and the ramp's handoff has to be as well. It is capped at the existing
+ * `MAX_RAMP_RUN_DIAMETERS`, must reach the existing minimum run length, and is
+ * validated against the same clearance regions (which already carry the tab
+ * keep-outs). A candidate that fails any check is skipped; none left means the
+ * caller uses the existing warned fallback.
+ */
+function findConstrainedRampPlacement(
+  target: ToolpathPoint,
+  regions: EntryClearanceRegion[],
+  toolDiameter: number,
+  rampPath: EntryRampPath | null,
+): RampPlacement | null {
+  if (rampPath === null || regions.length === 0) return null
+  const candidates = adjacentRampSegments(target, rampPath)
+  if (candidates.length === 0) return null
+
+  const maxRun = toolDiameter * MAX_RAMP_RUN_DIAMETERS
+  const minRun = Math.max(ENTRY_EPSILON, toolDiameter * 0.02)
+  for (const candidate of candidates) {
+    if (!(candidate.length >= minRun)) continue
+    const runLength = Math.min(candidate.length, maxRun)
+    if (!(runLength >= minRun)) continue
+    const scale = runLength / candidate.length
+    const end = scale >= 1 - ENTRY_EPSILON
+      ? candidate.end
+      : {
+          x: candidate.start.x + (candidate.end.x - candidate.start.x) * scale,
+          y: candidate.start.y + (candidate.end.y - candidate.start.y) * scale,
+        }
+    for (const region of regions) {
+      if (segmentInsideRegion(candidate.start, end, region)) {
+        return { start: candidate.start, end, region }
+      }
+    }
+  }
+  return null
+}
+
+interface RampSegmentCandidate {
+  start: Point
+  end: Point
+  length: number
+}
+
+/**
+ * Segments of `rampPath` that really meet the entry vertex and may carry the
+ * ramp. An OPEN fragment exposes only the forward segment; a CLOSED one
+ * exposes both actual adjacent segments, forward first.
+ */
+function adjacentRampSegments(target: Point, rampPath: EntryRampPath): RampSegmentCandidate[] {
+  const points = rampPath.closed ? trimClosedPath(rampPath.points) : rampPath.points
+  if (points.length < 2) return []
+  const index = points.findIndex((point) => sameXY(point, target))
+  if (index < 0) return []
+
+  const candidates: RampSegmentCandidate[] = []
+  const add = (end: Point | undefined): void => {
+    if (!end || sameXY(end, target)) return
+    candidates.push({
+      start: { x: target.x, y: target.y },
+      end: { x: end.x, y: end.y },
+      length: Math.hypot(end.x - target.x, end.y - target.y),
+    })
+  }
+
+  if (rampPath.closed) {
+    add(points[(index + 1) % points.length])
+    add(points[(index - 1 + points.length) % points.length])
+  } else if (index + 1 < points.length) {
+    add(points[index + 1])
+  }
+  return candidates
+}
+
+/** Drop the repeated closing vertex some callers leave on a closed polyline. */
+function trimClosedPath(points: Point[]): Point[] {
+  if (points.length >= 2 && sameXY(points[0], points[points.length - 1])) {
+    return points.slice(0, -1)
+  }
+  return points
 }
 
 export function entryBoundarySafety(toolDiameter: number): number {

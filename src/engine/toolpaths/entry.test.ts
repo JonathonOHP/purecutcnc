@@ -19,11 +19,13 @@ import {
   entryBoundarySafety,
   findLargestClearanceCircle,
   helixAngularDirection,
+  isEntryHandoffMove,
   pitchFromRampAngle,
   plungeLimitedFeedScale,
   synthesizeEntry,
   type EntryClearanceRegion,
   type EntryPolicy,
+  type EntryRampPath,
 } from './entry'
 import type { ToolpathMove, ToolpathPoint } from './types'
 
@@ -45,6 +47,33 @@ function rectangle(width: number, height: number): EntryClearanceRegion {
     ],
     islands: [],
   }
+}
+
+/** Distance from `point` to the segment `a`-`b`, for on-cut-path assertions. */
+function distanceToSegment(
+  point: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared === 0) return Math.hypot(point.x - a.x, point.y - a.y)
+  const ratio = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared))
+  return Math.hypot(point.x - (a.x + dx * ratio), point.y - (a.y + dy * ratio))
+}
+
+function onSegment(
+  point: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  epsilon = 1e-9,
+): boolean {
+  return distanceToSegment(point, a, b) <= epsilon
+}
+
+function rampPath(points: { x: number; y: number }[], closed: boolean): EntryRampPath {
+  return { points, closed }
 }
 
 function policy(
@@ -304,6 +333,173 @@ test('keeps ramp entry clear of the region boundary', () => {
       )
     }
   }
+})
+
+test('ramp follows the actual forward cut segment, capped, with an on-path handoff', () => {
+  const moves: ToolpathMove[] = []
+  const target = entryTarget(5, 5, 0)
+  // The path turns a corner after 20 mm. The cap must end the run on the FIRST
+  // segment, never bridge the corner or reach into the second one.
+  const path = rampPath([{ x: 5, y: 5 }, { x: 25, y: 5 }, { x: 25, y: 25 }], false)
+  const toolDiameter = 4
+  const result = synthesizeEntry(
+    moves,
+    null,
+    target,
+    0.5,
+    policy(rectangle(200, 40), { strategy: 'ramp', toolDiameter, rampPath: path }),
+  )
+  assert(result.usedStrategy === 'ramp', `expected ramp, got ${result.usedStrategy}`)
+  assert(!result.warnings.some((warning) => warning.code === 'entryStrategyFallback'),
+    'a real adjacent cut segment is a valid ramp, not a fallback')
+
+  const segmentStart = { x: 5, y: 5 }
+  const segmentEnd = { x: 25, y: 5 }
+  const maxRun = toolDiameter * 3
+  const leadIns = moves.filter((move) => move.kind === 'lead_in')
+  assert(leadIns.length > 0, 'the constrained ramp emits lead-in moves')
+  for (const move of leadIns) {
+    assert(onSegment(move.from, segmentStart, segmentEnd),
+      `ramp start ${move.from.x},${move.from.y} must lie on the cut segment`)
+    assert(onSegment(move.to, segmentStart, segmentEnd),
+      `ramp end ${move.to.x},${move.to.y} must lie on the cut segment`)
+    assert(Math.hypot(move.to.x - move.from.x, move.to.y - move.from.y) <= maxRun + 1e-9,
+      'the run stays within the existing maximum ramp run')
+    // 5 degrees x 800 ipm is an 8.7 ipm vertical component, below the 200 ipm
+    // plunge limit, so the feed policy is unchanged and stays at cut feed.
+    assert((move.feedScale ?? 1) === 1, 'the ramp preserves the existing feed policy')
+  }
+
+  const handoff = moves.find((move) => isEntryHandoffMove(move))
+  assert(handoff !== undefined, 'the ramp hands off to the cut start')
+  assert(onSegment(handoff.from, segmentStart, segmentEnd)
+    && onSegment(handoff.to, segmentStart, segmentEnd),
+  'the handoff stays on the cut polyline too')
+  assert(approx(handoff.to.x, target.x) && approx(handoff.to.y, target.y),
+    'the handoff ends at the actual entry vertex')
+})
+
+test('a closed fragment tries the forward adjacent segment, then the other actual one', () => {
+  const path = rampPath([
+    { x: 5, y: 5 },
+    { x: 9, y: 5 },
+    { x: 9, y: 9 },
+    { x: 5, y: 9 },
+  ], true)
+
+  const forwardMoves: ToolpathMove[] = []
+  const forward = synthesizeEntry(
+    forwardMoves,
+    null,
+    entryTarget(5, 5, 0),
+    0.5,
+    policy(rectangle(30, 30), { strategy: 'ramp', toolDiameter: 4, rampPath: path }),
+  )
+  assert(forward.usedStrategy === 'ramp', 'a closed fragment offers a ramp')
+  const forwardLeadIns = forwardMoves.filter((move) => move.kind === 'lead_in')
+  assert(forwardLeadIns.length > 0, 'the closed ramp emits moves')
+  assert(forwardLeadIns.every((move) => onSegment(move.from, { x: 5, y: 5 }, { x: 9, y: 5 })
+    && onSegment(move.to, { x: 5, y: 5 }, { x: 9, y: 5 })),
+  'the forward adjacent segment is preferred')
+
+  // A tab keep-out covering the forward segment leaves the other actual
+  // adjacent segment available, so the ramp must use it rather than fall back.
+  const blocked: EntryClearanceRegion = {
+    ...rectangle(30, 30),
+    islands: [[
+      { x: 6, y: 4.5 },
+      { x: 9, y: 4.5 },
+      { x: 9, y: 5.5 },
+      { x: 6, y: 5.5 },
+    ]],
+  }
+  const reverseMoves: ToolpathMove[] = []
+  const reverse = synthesizeEntry(
+    reverseMoves,
+    null,
+    entryTarget(5, 5, 0),
+    0.5,
+    policy(blocked, { strategy: 'ramp', toolDiameter: 4, rampPath: path }),
+  )
+  assert(reverse.usedStrategy === 'ramp', 'the other adjacent segment still allows a ramp')
+  const reverseLeadIns = reverseMoves.filter((move) => move.kind === 'lead_in')
+  assert(reverseLeadIns.length > 0, 'the reversed adjacent segment emits moves')
+  assert(reverseLeadIns.every((move) => onSegment(move.from, { x: 5, y: 5 }, { x: 5, y: 9 })
+    && onSegment(move.to, { x: 5, y: 5 }, { x: 5, y: 9 })),
+  'a blocked forward segment uses the other real adjacent segment, not a chord')
+})
+
+test('an unavailable cut segment forces the warned plunge, never a broad-domain chord', () => {
+  const moves: ToolpathMove[] = []
+  const result = synthesizeEntry(
+    moves,
+    null,
+    entryTarget(5, 5, 0),
+    4,
+    policy(rectangle(30, 30), { strategy: 'ramp', rampPath: null }),
+  )
+  assert(result.usedStrategy === 'plunge', `expected plunge, got ${result.usedStrategy}`)
+  assert(result.warnings.some((warning) => warning.code === 'entryStrategyFallback'),
+    'the fallback is explicit and warned')
+  assert(!moves.some((move) => move.kind === 'lead_in'),
+    'no broad-domain ramp is emitted when the cut segment is unavailable')
+  const plunge = moves.find((move) => move.kind === 'plunge')
+  assert(plunge !== undefined && approx(plunge.to.x, 5) && approx(plunge.to.y, 5),
+    'the warned fallback descends at the actual entry vertex')
+
+  // The same explicit result for a malformed/one-point fragment, so a caller
+  // cannot accidentally turn "no segment" into the legacy domain search.
+  const shortMoves: ToolpathMove[] = []
+  const short = synthesizeEntry(
+    shortMoves,
+    null,
+    entryTarget(5, 5, 0),
+    4,
+    policy(rectangle(30, 30), {
+      strategy: 'ramp',
+      rampPath: rampPath([{ x: 5, y: 5 }], false),
+    }),
+  )
+  assert(short.usedStrategy === 'plunge', 'a fragment with no forward segment falls back')
+})
+
+test('a too-short cut segment falls back rather than ramping on the spot', () => {
+  const moves: ToolpathMove[] = []
+  const result = synthesizeEntry(
+    moves,
+    null,
+    entryTarget(5, 5, 0),
+    4,
+    policy(rectangle(30, 30), {
+      strategy: 'ramp',
+      toolDiameter: 4,
+      rampPath: rampPath([{ x: 5, y: 5 }, { x: 5.05, y: 5 }], false),
+    }),
+  )
+  assert(result.usedStrategy === 'plunge', `expected plunge, got ${result.usedStrategy}`)
+  assert(result.warnings.some((warning) => warning.code === 'entryStrategyFallback'),
+    'the too-short segment is reported')
+  assert(moves.some((move) => move.kind === 'plunge'), 'and descends as a plunge')
+})
+
+test('an over-budget constrained ramp falls back instead of emitting a huge program', () => {
+  const moves: ToolpathMove[] = []
+  const result = synthesizeEntry(
+    moves,
+    null,
+    entryTarget(5, 5, -100),
+    100,
+    policy(rectangle(200, 200), {
+      strategy: 'ramp',
+      toolDiameter: 4,
+      rampAngle: 0.1,
+      rampPath: rampPath([{ x: 5, y: 5 }, { x: 5.1, y: 5 }], false),
+    }),
+  )
+  assert(result.usedStrategy === 'plunge', `expected plunge, got ${result.usedStrategy}`)
+  assert(result.warnings.some((warning) => warning.code === 'entryStrategyFallback'),
+    'the move-budget fallback is reported')
+  assert(moves.length < 20_010, `entry move count stays bounded, got ${moves.length}`)
 })
 
 test('still places a helix when the cut start sits on the region boundary', () => {
